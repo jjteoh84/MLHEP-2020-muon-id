@@ -2,6 +2,8 @@ import os
 from itertools import repeat
 import numpy as np
 import pandas as pd
+import tensorflow as tf
+import glob
 
 SIMPLE_FEATURE_COLUMNS = ['ncl[0]', 'ncl[1]', 'ncl[2]', 'ncl[3]', 'avg_cs[0]',
        'avg_cs[1]', 'avg_cs[2]', 'avg_cs[3]', 'ndof', 'MatchedHit_TYPE[0]',
@@ -80,3 +82,47 @@ def find_closest_hit_per_station(row):
             closest_dx_per_station[station] = row["FOI_hits_DX"][hits][closest_hit]
             closest_dy_per_station[station] = row["FOI_hits_DY"][hits][closest_hit]
     return result
+
+
+#####------------------------tf untils-----------------------
+def df_to_dataset(dataframe, shuffle=True, batch_size=32, repeatitions = 5):
+  dataframe = dataframe.copy()
+  
+  labels = dataframe.pop('label')
+  ds = tf.data.Dataset.from_tensor_slices((dict(dataframe), labels))
+  if shuffle:
+    ds = ds.shuffle(buffer_size=len(dataframe)).repeat(repeatitions)
+  ds = ds.batch(batch_size).prefetch(2)
+  return ds
+
+
+def make_ds(features, labels, shuffle=True, batch_size=32, repeatitions = 5):
+  ds = tf.data.Dataset.from_tensor_slices((features, labels))#.cache()
+  if shuffle:
+      ds = ds.shuffle(buffer_size=len(features)).repeat(repeatitions)
+  ds = ds.batch(batch_size).prefetch(2)
+  return ds
+
+
+
+def latest_saved_model(path):
+
+    existing_matches = glob.glob(path+'/model-*.ckpt')
+    index_max_quality = None
+    if existing_matches:
+        quality = []
+        for f in existing_matches:
+            try:
+#                 print(f)
+                file_number = int(os.path.splitext(os.path.basename(f))[0].split('.')[-1])
+#                 print(file_number)
+                quality.append(file_number)
+            except ValueError:
+                pass
+
+        index_max_quality =  quality.index(max(quality))
+        print('found model checkpoint-----:', existing_matches[index_max_quality])
+        return existing_matches[index_max_quality]
+
+    return None
+
