@@ -96,8 +96,8 @@ def df_to_dataset(dataframe, shuffle=True, batch_size=32, repeatitions = 5):
   return ds
 
 
-def make_ds(features, labels, shuffle=True, batch_size=32, repeatitions = 5):
-  ds = tf.data.Dataset.from_tensor_slices((features, labels))#.cache()
+def make_ds(features, labels, weights, shuffle=True, batch_size=32, repeatitions = 5):
+  ds = tf.data.Dataset.from_tensor_slices((features, labels, weights))#.cache()
   if shuffle:
       ds = ds.shuffle(buffer_size=len(features)).repeat(repeatitions)
   ds = ds.batch(batch_size).prefetch(2)
