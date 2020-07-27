@@ -5,6 +5,10 @@ import pandas as pd
 import tensorflow as tf
 import glob
 
+BEST_FEATURE_COLUMNS = ['ncl[0]', 'ncl[1]', 'ncl[2]', 'ncl[3]', 'avg_cs[0]',
+       'MatchedHit_TYPE[0]','MatchedHit_TYPE[1]', 'MatchedHit_TYPE[2]', 
+       'FOI_hits_N', 'NShared',  'PT', 'P']
+
 SIMPLE_FEATURE_COLUMNS = ['ncl[0]', 'ncl[1]', 'ncl[2]', 'ncl[3]', 'avg_cs[0]',
        'avg_cs[1]', 'avg_cs[2]', 'avg_cs[3]', 'ndof', 'MatchedHit_TYPE[0]',
        'MatchedHit_TYPE[1]', 'MatchedHit_TYPE[2]', 'MatchedHit_TYPE[3]',

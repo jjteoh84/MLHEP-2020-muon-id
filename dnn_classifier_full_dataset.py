@@ -1,31 +1,45 @@
-
-# coding: utf-8
-
-# In[1]:
-
-
 import tensorflow as tf
-print(tf.__version__)
+
 from tensorflow import keras
 
 import utils
 import scoring
 
-import os
+import os, sys
 import tempfile
 import json
+import argparse
+from argparse import ArgumentParser
+from tqdm import tqdm
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import datetime
+
+import time
+from datetime import timedelta, datetime
 
 import sklearn
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+# from gtk.keysyms import minutes
+
+# Global Configuration
+#_____________________________________________________________________________
+
+# # Set CPU as available physical device
+my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
+tf.config.experimental.set_visible_devices(devices= my_devices, device_type='CPU')
+
+physical_devices = tf.config.list_physical_devices('CPU')
+print("Num CPUs:", len(physical_devices))
+
+# 
+# # To find out which devices your operations and tensors are assigned to
+# tf.debugging.set_log_device_placement(True)
 
 
 mpl.rcParams['figure.figsize'] = (12, 10)
@@ -34,115 +48,156 @@ colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 EPOCHS = 1000
 BATCH_SIZE = 32
 SHUFFLE = True
-REPEATITION=50
+REPEATITION=10
 
-
-log_dir = "./logs/fit_100percent_Data/"
-
-#output folder for saving checkpoint
-outputFolder = './output_100percent_Data'
-if not os.path.exists(outputFolder):
-    os.makedirs(outputFolder)
+# print(tf.__version__)
+# print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
     
-get_ipython().magic('load_ext tensorboard')
-get_ipython().system('rm -rf log_dir')
-
-
-# In[2]:
-
-
-columns = utils.SIMPLE_FEATURE_COLUMNS + ["id", "label", "weight"] #, "sWeight", "kinWeight"]
-DATA_PATH = "~/share/data/I-coopetition-muon-id/"
-train = pd.read_csv(os.path.join(DATA_PATH, "train.csv.gz"), index_col="id", usecols=columns)
-test_df = pd.read_csv(os.path.join(DATA_PATH, "test-features.csv.gz"), index_col="id", usecols=utils.SIMPLE_FEATURE_COLUMNS + ["id"])
-
-
-# columns = utils.SIMPLE_FEATURE_COLUMNS + ["id", "label", "weight"] #,  "kinWeight"]
-# DATA_FOLDER = "~/share/data/1.6.2-boosting/"
-# data = pd.read_csv(os.path.join(DATA_FOLDER, "train_1_percent.csv"), index_col="id", usecols=columns)
-
-
-# new_key_label=[]
-# for name in data.columns:
-#     if '[' in name:
-#         name = name.replace('[', '_').replace(']', '')
-
-#     new_key_label.append(name)
-
-# data.columns = new_key_label
-
-
-# In[3]:
-
-
-# data.head(5)
-
-
-# In[4]:
-
-
-# Use a utility from sklearn to split and shuffle our dataset.
-## for full dataset: ~/share/data/I-coopetition-muon-id/
-train_df, val_df = train_test_split(train, test_size=0.25, shuffle=True, random_state=2342234)
-
-##for small dataset i.e  ~/share/data/1.6.2-boosting/
-# train_df, test_df = train_test_split(data, test_size=0.2)
-# train_df, val_df = train_test_split(train_df, test_size=0.2)
+# get_ipython().magic('load_ext tensorboard')
+# get_ipython().system('rm -rf log_dir')
 
 
 
+
+def main(commandLine=None):
+    """ Main function"""
+    parser = ArgumentParser()
+    # General switches
+    
+    parser.add_argument('-d', '--debug', help='Turn on debug output', action='store_true')
+    
+    parser.add_argument('-tr', '--trainning', help='Run in the training mode', action='store_true')
+    parser.add_argument('-it', '--inputTestFile', help='Input testing dataset', action='store_true')
+    
+    parser.add_argument('-o', '--outputPath', help='Output path for pdf/jpg/submission', default='./output/' + datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+    
+    parser.add_argument('-r', '--restore', help='Restrore model/weight from checkpoint', action='store_true')
+    parser.add_argument('-rckp', '--restoreFromCkpt', help='Path to restrore model/weight from checkpoint ', default='./ckpt')
+    parser.add_argument('-rr', '--retrain', help='Restrore model/weight from checkpoint and retrain', action='store_true')
+    
+    parser.add_argument('-c', '--checkPointPath', help='Output path for checkpoint', default='./ckpt')
+    parser.add_argument('-l', '--tbLogPath', help='Output path for tensorboard', default='./logs')
+    
+    parser.add_argument('-pr', '--printData', help='Print dataset', action='store_false')
+    
+    parser.add_argument('-ev', '--evaluate', help='Run in the evaluate mode with validation dataset', action='store_false')
+#     parser.add_argument('-et', '--evaluate', help='Run in the evaluate mode with test dataset', action='store_false')
+    
+    
+#     parser.add_argument('-pt', '--evaluate', help='Run in the prediction mode with test dataset', action='store_false')
+    
+    parser.add_argument('-s', '--submit', help='Generate submission files', action='store_true')
+    
+    
+    parser.add_argument('-v', '--version', help='output subffix', default='')
+    
+    
+    start = time.time()
+    tqdm.write("Start time: %s (Wall clock time)" % datetime.now())
+    
+    opts = None
+    if commandLine:
+        opts = parser.parse_args(commandLine)
+    else:
+        opts = parser.parse_args()
+    
+       
+    opts.outputPath = os.path.abspath(opts.outputPath)
+    print(opts.outputPath)
+    if not os.path.exists(opts.outputPath):
+        os.makedirs(opts.outputPath)   
+        
+    opts.tbLogPath = os.path.abspath(opts.outputPath + '/' + opts.tbLogPath)
+    if not os.path.exists(opts.tbLogPath):
+        os.makedirs(opts.tbLogPath)  
+        
+    opts.checkPointPath = os.path.abspath(opts.outputPath + '/' + opts.checkPointPath)
+    if not os.path.exists(opts.checkPointPath):
+        os.makedirs(opts.checkPointPath) 
+        
+    
+    
+    readStartTime = time.time()
+    
+    use_columns = utils.BEST_FEATURE_COLUMNS
+    
+    columns = use_columns + ["id", "label", "weight"] #, "sWeight", "kinWeight"]
+    DATA_PATH = "/data/atlas/users/jjteoh/mlhep2020_muID/"
+    train = pd.read_csv(os.path.join(DATA_PATH, "train.csv.gz"), index_col="id", usecols=columns)
+#     train = pd.read_csv(os.path.join(DATA_PATH, "train_1_percent.csv"), index_col="id", usecols=columns)
+    
+    
+    
+    testHasLable = False 
+    
+    if opts.inputTestFile :
+        print('loading dedicated test file.......')
+        train_df, val_df = train_test_split(train, test_size=0.25, shuffle=True, random_state=2342234)
+        test_df = pd.read_csv(os.path.join(DATA_PATH, "test-features.csv.gz"), index_col="id", usecols=use_columns + ["id"])       
+    else:
+        train_df, test_df = train_test_split(train, test_size=0.2)
+        train_df, val_df = train_test_split(train_df, test_size=0.2)
+        testHasLable = True
+
+    if opts.printData:
+        train.head(5)
+
+#     print('testhaslabel: ---- ', testHasLable)
+    readTime = time.time() - readStartTime
+       
+
+
+    preprocessingStartTime = time.time()
 # train_ds = utils.df_to_dataset(train_df, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
 # val_ds = utils.df_to_dataset(val_df, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
 # test_ds = utils.df_to_dataset(test_df, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
 
 
-# Form np arrays of labels and features.
-train_labels = np.array(train_df.pop('label'))
-val_labels = np.array(val_df.pop('label'))
-# test_labels = np.array(test_df.pop('label'))
+    # Form np arrays of labels and features.
+    train_labels = np.array(train_df.pop('label'))
+    val_labels = np.array(val_df.pop('label'))
+    if testHasLable: test_labels = np.array(test_df.pop('label'))
+    
+    
+    train_weights = np.array(train_df.pop('weight'))
+    val_weights = np.array(val_df.pop('weight'))
+    if testHasLable: test_weights = np.array(test_df.pop('weight'))
+    
+    
+    train_features = np.array(train_df, dtype='float32')
+    val_features = np.array(val_df, dtype='float32')
+    test_features = np.array(test_df, dtype='float32')
 
-
-train_weights = np.array(train_df.pop('weight'))
-val_weights = np.array(val_df.pop('weight'))
-# test_weights = np.array(test_df.pop('weight'))
-
-
-train_features = np.array(train_df)
-val_features = np.array(val_df)
-test_features = np.array(test_df)
-
-# print(train_features)
-# print(train_labels.shape)
-
+    
 # Normalize the input features using the sklearn StandardScaler. This will set the mean to 0 and standard deviation to 1.
 # Note: The StandardScaler is only fit using the train_features to be sure the model is not peeking at the validation or test sets.
 
-scaler = StandardScaler()
-train_features = scaler.fit_transform(train_features)
-val_features = scaler.transform(val_features)
-test_features = scaler.transform(test_features)
-
-
-train_ds = utils.make_ds(train_features, train_labels, train_weights, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
-val_ds = utils.make_ds(val_features, val_labels, val_weights,  shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
-# test_ds = utils.make_ds(test_features, test_labels, test_weights, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+    scaler = StandardScaler()
+    train_features = scaler.fit_transform(train_features)
+    val_features = scaler.transform(val_features)
+    test_features = scaler.transform(test_features)
+    
+    
+    train_ds = utils.make_ds(train_features, train_labels, train_weights, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+    val_ds = utils.make_ds(val_features, val_labels, val_weights,  shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+    if testHasLable: test_ds = utils.make_ds(test_features, test_labels, test_weights, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+#     print(val_ds)
+#     return
 
 # val_ds = tf.data.Dataset.from_tensor_slices((val_features, val_labels))#.cache()
 # val_ds = val_ds.batch(BATCH_SIZE).prefetch(2) 
 
-print('Training labels shape:', train_labels.shape)
-print('Validation labels shape:', val_labels.shape)
-# print('Test labels shape:', test_labels.shape)
-
-print('Training features shape:', train_features.shape)
-print('Validation features shape:', val_features.shape)
-print('Test features shape:', test_features.shape)
-# print(test_ds)
-
-
-# In[5]:
+    print('Training labels shape:', train_labels.shape)
+    print('Validation labels shape:', val_labels.shape)
+    if testHasLable: print('Test labels shape:', test_labels.shape)
+    
+    print('Training features shape:', train_features.shape)
+    print('Validation features shape:', val_features.shape)
+    print('Test features shape:', test_features.shape)
 
 
+    preprocessingTime = time.time() - preprocessingStartTime
+     
 
 
 # for feature_batch, label_batch in train_ds.take(1):
@@ -164,76 +219,30 @@ print('Test features shape:', test_features.shape)
 # In[5]:
 
 
-METRICS = [
-#       keras.metrics.TruePositives(name='tp'),
-#       keras.metrics.FalsePositives(name='fp'),
-#       keras.metrics.TrueNegatives(name='tn'),
-#       keras.metrics.FalseNegatives(name='fn'),
-      keras.metrics.BinaryAccuracy(name='accuracy'),
-      keras.metrics.Precision(name='precision'),
-      keras.metrics.Recall(name='recall'),
-      keras.metrics.AUC(name='auc'),
-]
-
-tf.keras.backend.set_floatx('float64')
-def make_model(metrics = METRICS, output_bias=None):
-
-  model = keras.Sequential([
-#       keras.layers.Dense(1280, activation='relu', input_shape=(train_features.shape[-1],), name="layer1" ),
-#       feature_layer,
-      keras.layers.Dense(1280, activation='relu', name="layer1" ),
-      keras.layers.Dense(640, activation='relu', name="layer2"),
-      keras.layers.Dropout(.1, name="dropout1"),
-      keras.layers.Dense(320, activation='relu', name="layer3"),
-      keras.layers.Dropout(.05, name="dropout2"),
-      keras.layers.Dense(160, activation='relu', name="layer4"),
-      keras.layers.Dropout(.025, name="dropout3"),
-      keras.layers.Dense(80, activation='relu', name="layer5"),
-      keras.layers.Dropout(.0125, name="dropout4"),
-      keras.layers.Dense(40, activation='relu', name="layer6"),
-      keras.layers.Dense(20, activation='relu', name="layer7"),
-      keras.layers.Dense(1, name="layer8"),
-      keras.layers.Dense(1, activation='sigmoid',
-                         bias_initializer=output_bias),
-  ])
-
-#   model.compile(optimizer='rmsprop',
-#               loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-#               metrics=metrics)
     
-  model.compile(
-#       optimizer=keras.optimizers.Adam(lr=1e-3),
-      optimizer='rmsprop',
-      loss=keras.losses.BinaryCrossentropy(),
-      metrics=metrics)
+#     tf.keras.backend.set_floatx('float64')
+    strategy = tf.distribute.MirroredStrategy()
+    
+    latest_ckpt = None
+    latest_model_ckpt = None
+    if opts.restore:
 
-#   model.compile(optimizer='adam',
-#                 loss=tf.losses.SparseCategoricalCrossentropy(from_logits=True),
-#                 metrics=['accuracy'])
-
-
-
-  return model
-
-
-
-RESTORE = False
-latest_ckpt = tf.train.latest_checkpoint(outputFolder)
-print('found latest checkpoint----: ', latest_ckpt)
-
-latest_model_ckpt = utils.latest_saved_model(outputFolder)
-
-if latest_model_ckpt is not None and RESTORE:
-    print('.....loading model from checkpoint: ', latest_model_ckpt)
-    model = tf.keras.models.load_model(latest_model_ckpt)
-    model_history = model.history
-elif latest_ckpt is not None and RESTORE:
-    model = make_model()
-    model.load_weights(latest_ckpt).assert_consumed()
-    print("Restored from {}".format(latest_ckpt))
-    model_history = model.history
-else:
-    model = make_model()
+        latest_ckpt = tf.train.latest_checkpoint(opts.restoreFromCkpt)
+        print('found latest checkpoint----: ', latest_ckpt)
+        
+        latest_model_ckpt = utils.latest_saved_model(opts.restoreFromCkpt)
+    
+    if latest_model_ckpt is not None and opts.restore:
+        print('.....loading model from checkpoint: ', latest_model_ckpt)
+        model = tf.keras.models.load_model(latest_model_ckpt)
+        model_history = model.history
+    elif latest_ckpt is not None and opts.restore:
+        model = make_model(strategy)
+        model.load_weights(latest_ckpt).assert_consumed()
+        print("Restored from {}".format(latest_ckpt))
+        model_history = model.history
+    else:
+        model = make_model(strategy)
 
 
 # model.summary()
@@ -244,48 +253,49 @@ else:
 
 
 
-early_stopping = tf.keras.callbacks.EarlyStopping(
-    monitor='val_auc',
-    verbose=1,
-    patience=20,
-    mode='max',
-    restore_best_weights=True)
+    early_stopping = tf.keras.callbacks.EarlyStopping(
+        monitor='val_auc',
+        verbose=1,
+        patience=20,
+        mode='max',
+        restore_best_weights=True)
 
 
 
 
-checkpoint_path = outputFolder+"/model-{epoch:02d}_{val_auc:.4f}.ckpt"
-# /model-{epoch:02d}-{val_auc:.2f}.ckpt"
+    checkpoint_path = opts.checkPointPath+"/model-{epoch:02d}_{val_auc:.4f}.ckpt"
+    # /model-{epoch:02d}-{val_auc:.2f}.ckpt"
 
-# Create a callback that saves the model's weights
-cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
-                                                 monitor='val_auc',
-                                                 save_weights_only=False,
-                                                 verbose=1,
-                                                 mode='max',
-                                                 save_best_only=True)
-
-cp_callback_weightOnly = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
-                                                 monitor='val_auc',
-                                                 save_weights_only=True,
-                                                 verbose=1,
-                                                 mode='max',
-                                                 save_best_only=True)
-
-
-tensorboard_callback = tf.keras.callbacks.TensorBoard( log_dir=log_dir + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
-                                                histogram_freq=1,
-                                                write_graph=True,
-                                                write_images=False,
-                                                update_freq='epoch',
-                                                profile_batch=2,
-                                                embeddings_freq=0,
-                                                embeddings_metadata=None,
+    # Create a callback that saves the model's weights
+    cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                     monitor='val_auc',
+                                                     save_weights_only=False,
+                                                     verbose=1,
+                                                     mode='max',
+                                                     save_best_only=True)
+    
+    cp_callback_weightOnly = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                     monitor='val_auc',
+                                                     save_weights_only=True,
+                                                     verbose=1,
+                                                     mode='max',
+                                                     save_best_only=True)
+    
+    
+    tensorboard_callback = tf.keras.callbacks.TensorBoard( log_dir=opts.tbLogPath + '/' + datetime.now().strftime("%Y_%m_%d-%H_%M_%S"),
+                                                    histogram_freq=1,
+                                                    write_graph=True,
+                                                    write_images=False,
+                                                    update_freq='epoch',
+                                                    profile_batch=2,
+                                                    embeddings_freq=0,
+                                                    embeddings_metadata=None,
                                                 )
 
 
-# In[7]:
-
+    trainingStartTime = time.time()
+     
+    model_history = None    
 
 ###TO-DO Write call back to save training history for every epoch
 #https://github.com/tensorflow/tensorflow/issues/27861
@@ -304,16 +314,19 @@ tensorboard_callback = tf.keras.callbacks.TensorBoard( log_dir=log_dir + datetim
         #     validation_data=(val_features, val_labels))
 
 # if (latest_ckpt is None  and latest_model_ckpt is  None and not RESTORE) :
-if not RESTORE:
-    model_history = model.fit(
-    train_ds,
-#     batch_size=BATCH_SIZE,
-    steps_per_epoch = 50,
-    epochs=EPOCHS,
-    shuffle=False,
-    callbacks = [early_stopping, cp_callback, tensorboard_callback],
-    validation_data=val_ds)
-
+    
+    if not opts.restore or opts.retrain:
+        print('start training ------')
+        model_history = model.fit(
+        train_ds,
+    #     batch_size=BATCH_SIZE,
+        steps_per_epoch = 50,
+        epochs=EPOCHS,
+        shuffle=False,
+        callbacks = [early_stopping, cp_callback, tensorboard_callback],
+        validation_data=val_ds)
+        
+    
 # model.fit(train_features,
 #     train_labels,
 #           validation_data=val_ds,
@@ -322,143 +335,198 @@ if not RESTORE:
 # print("Accuracy", accuracy)
 
 
+    trainingTime = time.time() - trainingStartTime
+    
 
-# In[8]:
 
-
-def plot_metrics(history):
-  metrics =  ['loss', 'auc', 'precision', 'recall']
-  for n, metric in enumerate(metrics):
-    name = metric.replace("_"," ").capitalize()
-    plt.subplot(2,2,n+1)
-    plt.plot(history.epoch,  history.history[metric], color=colors[0], label='Train')
-    plt.plot(history.epoch, history.history['val_'+metric],
-             color=colors[0], linestyle="--", label='Val')
-    plt.xlabel('Epoch')
-    plt.ylabel(name)
-    if metric == 'loss':
-      plt.ylim([0, plt.ylim()[1]])
-    elif metric == 'auc':
-      plt.ylim([0.5,1])
-    else:
-      plt.ylim([0,1])
-
-    plt.legend()
 
 # with open(outputFolder+"history.json", 'w') as fp:
 # json.dumps(str(model.history) )
-    
-plot_metrics(model_history)
+    if model_history is not None:
+        plot_metrics(model_history, opts.outputPath)
 
 
 # In[9]:
+    predict_eval_StartTime = time.time()
+
+    train_predictions_baseline = model.predict(train_features, batch_size=BATCH_SIZE)
+    val_predictions_baseline = model.predict(val_features, batch_size=BATCH_SIZE)
+    test_predictions_baseline = model.predict(test_features, batch_size=BATCH_SIZE)
 
 
-train_predictions_baseline = model.predict(train_features, batch_size=BATCH_SIZE)
-val_predictions_baseline = model.predict(val_features, batch_size=BATCH_SIZE)
-test_predictions_baseline = model.predict(test_features, batch_size=BATCH_SIZE)
 
 
-def plot_cm(labels, predictions, p=0.5):
-  cm = confusion_matrix(labels, predictions > p)
-  plt.figure(figsize=(5,5))
-  sns.heatmap(cm, annot=True, fmt="d")
-  plt.title('Confusion matrix @{:.2f}'.format(p))
-  plt.ylabel('Actual label')
-  plt.xlabel('Predicted label')
 
-  print('Legitimate Transactions Detected (True Negatives): ', cm[0][0])
-  print('Legitimate Transactions Incorrectly Detected (False Positives): ', cm[0][1])
-  print('Fraudulent Transactions Missed (False Negatives): ', cm[1][0])
-  print('Fraudulent Transactions Detected (True Positives): ', cm[1][1])
-  print('Total Fraudulent Transactions: ', np.sum(cm[1]))
-
-
-baseline_results = model.evaluate(val_features, val_labels,
-                                  batch_size=BATCH_SIZE, verbose=0)
-
-for name, value in zip(model.metrics_names, baseline_results):
-  print(name, ': ', value)
-# print(test_predictions_baseline)
-
-plot_cm(val_labels, val_predictions_baseline)
+    baseline_results = model.evaluate(val_features, val_labels,
+                                      batch_size=BATCH_SIZE, verbose=0)
+    
+    
+    predict_eval_Time = time.time() - predict_eval_StartTime
+    
+    for name, value in zip(model.metrics_names, baseline_results):
+      print(name, ': ', value)
+    # print(test_predictions_baseline)
+    
+    plot_cm(val_labels, val_predictions_baseline, opts.outputPath)
 
 
 # In[10]:
 
 
-def plot_roc(name, labels, predictions, **kwargs):
-  fp, tp, _ = sklearn.metrics.roc_curve(labels, predictions)
 
-  plt.plot(100*fp, 100*tp, label=name, linewidth=2, **kwargs)
-  plt.xlabel('False positives [%]')
-  plt.ylabel('True positives [%]')
-#   plt.xlim([-0.5,20])
-#   plt.ylim([0,100.5])
-  plt.grid(True)
-  ax = plt.gca()
-  ax.set_aspect('equal')
 
 
 # In[11]:
 
 
-plot_roc("Train Baseline", train_labels, train_predictions_baseline, color=colors[0])
-# plot_roc("Test Baseline", test_labels, test_predictions_baseline, color=colors[1], linestyle='--')
-plot_roc("Validation Baseline", val_labels, val_predictions_baseline, color=colors[2], linestyle='-.')
-
-plt.legend(loc='lower right')
-
-
-# In[27]:
+    plot_roc("Train Baseline", train_labels, train_predictions_baseline, opts.outputPath, color=colors[0])    
+    plot_roc("Validation Baseline", val_labels, val_predictions_baseline, opts.outputPath, color=colors[2], linestyle='-.')
+    if testHasLable: 
+        plot_roc("Test Baseline", test_labels, test_predictions_baseline, opts.outputPath, color=colors[1], linestyle='--')
+    
+    
 
 
-# print(val_predictions_baseline)
-# print(val_predictions_baseline.shape)
-# val_predictions_baseline.flatten()
-# print(val_predictions_baseline.flatten())
-# print(val_labels)
-# # val_weights = np.array(val_df.copy('weight'))
-# # val_weights = val_df['weight'].copy().values
-# # print(val_weights)
+    print('')
+    
+    rejection90 = scoring.rejection90(val_labels, val_predictions_baseline.flatten(), sample_weight=val_weights)
+    print('----------scoring-----rejection@90=  ', rejection90)
+    print('')
 
-# print(len(val_predictions_baseline.flatten()))
-# print(len(val_labels))
-# print(len(val_weights))
-
-
-# In[12]:
-
-
-scoring.rejection90(val_labels, val_predictions_baseline.flatten(), sample_weight=val_weights)
-
-
-# In[ ]:
-
-
-# model.fit(train.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values, train.label, sample_weight=train.kinWeight.values)
-
-
-# In[13]:
-
-
-# predictions = model.predict_proba(test.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
-test_predictions = model.predict(test_features, batch_size=BATCH_SIZE)
-
-
-# In[15]:
+    test_predictions = model.predict(test_features, batch_size=BATCH_SIZE)
 
 
 
-compression_opts = dict(method='zip',
-                        archive_name='submission.csv')  
-pd.DataFrame(data={"prediction": test_predictions.flatten()}, index=test_df.index).to_csv(
-    "submission.zip", index_label=utils.ID_COLUMN, compression=compression_opts)
+    if opts.submit:
+        tqdm.write("Preparing submission file......." )
+        compression_opts = dict(method='zip',
+                                archive_name='submission.csv')  
+        pd.DataFrame(data={"prediction": test_predictions.flatten()}, index=test_df.index).to_csv(
+            opts.outputPath+"/submission.zip", index_label=utils.ID_COLUMN, compression=compression_opts)
+        
+        
+        # In[16]:
+        
+        
+        submission = pd.read_csv(opts.outputPath + "/submission.zip")
+        print(submission.head(5))
 
+    
+    tqdm.write("End time: %s (Wall clock time)" % datetime.now())
+    execTime = time.time() - start
+    
+    tqdm.write("Reading input took: %s secs (Wall clock time)" % timedelta(seconds=round(readTime))) 
+    tqdm.write("Data preprocessing took: %s secs (Wall clock time)" % timedelta(seconds=round(preprocessingTime)))
+    tqdm.write("Training took: %s secs (Wall clock time)" % timedelta(seconds=round(trainingTime)))
+    tqdm.write("Prediction & evualation took: %s secs (Wall clock time)" % timedelta(seconds=round(predict_eval_Time)))
+    
+    tqdm.write("Total execution took: %s secs (Wall clock time)" % timedelta(seconds=round(execTime)))
 
-# In[16]:
+#_____________________________________________________________________________
+def make_model(strategy , output_bias=None):
+    
+    with strategy.scope():
+#         tf.keras.backend.set_floatx('float64')
+        METRICS = [
+          keras.metrics.BinaryAccuracy(name='accuracy'),
+          keras.metrics.Precision(name='precision'),
+          keras.metrics.Recall(name='recall'),
+          keras.metrics.AUC(name='auc'),
+          ]
+        
+        model = keras.Sequential([
+    #       keras.layers.Dense(1280, activation='relu', input_shape=(train_features.shape[-1],), name="layer1" ),
+    #       feature_layer,
+          keras.layers.Dense(1280, activation='relu', name="layer1"),
+          keras.layers.Dense(640, activation='relu', name="layer2"),
+          keras.layers.Dropout(.1, name="dropout1"),
+          keras.layers.Dense(320, activation='relu', name="layer3"),
+          keras.layers.Dropout(.05, name="dropout2"),
+          keras.layers.Dense(160, activation='relu', name="layer4"),
+          keras.layers.Dropout(.025, name="dropout3"),
+          keras.layers.Dense(80, activation='relu', name="layer5"),
+          keras.layers.Dropout(.0125, name="dropout4"),
+          keras.layers.Dense(40, activation='relu', name="layer6"),
+          keras.layers.Dense(20, activation='relu', name="layer7"),
+          keras.layers.Dense(1, name="layer8"),
+          keras.layers.Dense(1, activation='sigmoid',
+                             bias_initializer=output_bias),
+          ])
+      
+      #   model.compile(optimizer='rmsprop',
+    #               loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+    #               metrics=metrics)
+    
+    model.compile(
+#       optimizer=keras.optimizers.Adam(lr=1e-3),
+      tf.keras.optimizers.RMSprop(learning_rate=0.0005),
+      loss=keras.losses.BinaryCrossentropy(),
+      metrics=METRICS )
 
+#   model.compile(optimizer='adam',
+#                 loss=tf.losses.SparseCategoricalCrossentropy(from_logits=True),
+#                 metrics=['accuracy']
+# )
 
-submission = pd.read_csv("./submission.zip")
-submission.head(5)
+    return model
 
+#_____________________________________________________________________________ 
+def plot_metrics(history, outputPath):
+    metrics =  ['loss', 'auc', 'precision', 'recall']
+    for n, metric in enumerate(metrics):
+        name = metric.replace("_"," ").capitalize()
+        plt.subplot(2,2,n+1)
+        plt.plot(history.epoch,  history.history[metric], color=colors[0], label='Train')
+        plt.plot(history.epoch, history.history['val_'+metric],
+                 color=colors[0], linestyle="--", label='Val')
+        plt.xlabel('Epoch')
+        plt.ylabel(name)
+        if metric == 'loss':
+          plt.ylim([0, plt.ylim()[1]])
+        elif metric == 'auc':
+          plt.ylim([0.5,1])
+        else:
+          plt.ylim([0,1])
+        
+        plt.legend()
+    plt.savefig(outputPath +'/'+ metric+'.jpg')
+
+#_____________________________________________________________________________ 
+def plot_cm(labels, predictions,  outputPath = ".", p=0.5):
+    cm = confusion_matrix(labels, predictions > p)
+    plt.figure(figsize=(5,5))
+    sns.heatmap(cm, annot=True, fmt="d")
+    plt.title('Confusion matrix @{:.2f}'.format(p))
+    plt.ylabel('Actual label')
+    plt.xlabel('Predicted label')
+    plt.savefig(outputPath + '/Confusion_matrix.jpg')
+    
+    print('Legitimate Transactions Detected (True Negatives): ', cm[0][0])
+    print('Legitimate Transactions Incorrectly Detected (False Positives): ', cm[0][1])
+    print('Fraudulent Transactions Missed (False Negatives): ', cm[1][0])
+    print('Fraudulent Transactions Detected (True Positives): ', cm[1][1])
+    print('Total Fraudulent Transactions: ', np.sum(cm[1]))
+  
+  
+    
+#_____________________________________________________________________________  
+def plot_roc(name, labels, predictions, outputPath, **kwargs):
+    fp, tp, _ = sklearn.metrics.roc_curve(labels, predictions)
+    plt.figure(200)
+    plt.plot(100*fp, 100*tp, label=name, linewidth=2, **kwargs)
+    plt.xlabel('False positives [%]')
+    plt.ylabel('True positives [%]')
+    #   plt.xlim([-0.5,20])
+    #   plt.ylim([0,100.5])
+    plt.grid(True)
+    plt.legend(loc='lower right')
+    ax = plt.gca()
+    ax.set_aspect('equal')
+    plt.savefig(outputPath + '/ROC.jpg')
+    
+
+  
+#_____________________________________________________________________________
+if __name__ == '__main__':
+    main()
+    #EOF
