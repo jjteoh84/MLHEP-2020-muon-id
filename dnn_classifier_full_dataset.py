@@ -1,6 +1,7 @@
 import tensorflow as tf
 
 from tensorflow import keras
+import kerastuner as kt
 
 import utils
 import scoring
@@ -48,7 +49,7 @@ colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 EPOCHS = 1000
 BATCH_SIZE = 32
 SHUFFLE = True
-REPEATITION=10
+REPEATITION=20
 
 # print(tf.__version__)
 # print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
@@ -88,7 +89,7 @@ def main(commandLine=None):
     
     parser.add_argument('-s', '--submit', help='Generate submission files', action='store_true')
     
-    
+    parser.add_argument('-tu', '--tune', help='HyperParameter tuning', action='store_true')
     parser.add_argument('-v', '--version', help='output subffix', default='')
     
     
@@ -119,13 +120,16 @@ def main(commandLine=None):
     
     readStartTime = time.time()
     
-    use_columns = utils.BEST_FEATURE_COLUMNS
+    use_columns = utils.BEST_FEATURE_COLUMNS 
+#     use_columns = utils.SIMPLE_FEATURE_COLUMNS
+    
     
     columns = use_columns + ["id", "label", "weight"] #, "sWeight", "kinWeight"]
     DATA_PATH = "/data/atlas/users/jjteoh/mlhep2020_muID/"
     train = pd.read_csv(os.path.join(DATA_PATH, "train.csv.gz"), index_col="id", usecols=columns)
 #     train = pd.read_csv(os.path.join(DATA_PATH, "train_1_percent.csv"), index_col="id", usecols=columns)
     
+
     
     
     testHasLable = False 
@@ -178,9 +182,9 @@ def main(commandLine=None):
     test_features = scaler.transform(test_features)
     
     
-    train_ds = utils.make_ds(train_features, train_labels, train_weights, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
-    val_ds = utils.make_ds(val_features, val_labels, val_weights,  shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
-    if testHasLable: test_ds = utils.make_ds(test_features, test_labels, test_weights, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+    train_ds = utils.make_ds(train_features, train_labels, weights=None, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+    val_ds = utils.make_ds(val_features, val_labels, weights=None,  shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
+    if testHasLable: test_ds = utils.make_ds(test_features, test_labels, weights=None, shuffle=SHUFFLE, batch_size=BATCH_SIZE, repeatitions = REPEATITION)
 #     print(val_ds)
 #     return
 
@@ -225,6 +229,7 @@ def main(commandLine=None):
     
     latest_ckpt = None
     latest_model_ckpt = None
+    model = None
     if opts.restore:
 
         latest_ckpt = tf.train.latest_checkpoint(opts.restoreFromCkpt)
@@ -241,11 +246,43 @@ def main(commandLine=None):
         model.load_weights(latest_ckpt).assert_consumed()
         print("Restored from {}".format(latest_ckpt))
         model_history = model.history
-    else:
+    elif not opts.tune:
         model = make_model(strategy)
 
 
+    hpTuningStartTime = time.time()
+    tuner = None
+    if opts.tune:
+        tuner = kt.Hyperband(make_model_hp_tunning,
+                     objective = kt.Objective("val_auc", direction="max"), 
+                     max_epochs = 10,
+                     factor = 3,
+                     directory = opts.outputPath + '/HPtuning',
+                     project_name = 'hp_tuning')   
+
 # model.summary()
+        tuner.search(train_ds, epochs = 30, validation_data = val_ds, 
+                        callbacks=[ tf.keras.callbacks.EarlyStopping(monitor='val_auc',patience=5, restore_best_weights=True)]
+                        )
+
+        # Get the optimal hyperparameters
+        best_hps = tuner.get_best_hyperparameters(num_trials = 1)[0]
+
+        print('The hyperparameter search is complete. The optimal number of units in the first densely-connected layer are:')
+        print('layer1: ' , best_hps.get('units1'))
+        print('layer2: ' , best_hps.get('units2'))
+        print('layer3: ' , best_hps.get('units3'))
+        print('layer4: ' , best_hps.get('units4'))
+#         print('layer5: ' , best_hps.get('units5'))
+#         print('layer6: ' , best_hps.get('units6'))
+#         print('layer7: ' , best_hps.get('units7'))
+        print('The optimal learning rate: ' , best_hps.get('learning_rate'))
+        print('')
+        
+        
+        model = tuner.hypermodel.build(best_hps)
+
+    hpTuningTime = time.time() - hpTuningStartTime    
 
 
 # Save the weights using the `checkpoint_path` format
@@ -256,7 +293,7 @@ def main(commandLine=None):
     early_stopping = tf.keras.callbacks.EarlyStopping(
         monitor='val_auc',
         verbose=1,
-        patience=20,
+        patience=30,
         mode='max',
         restore_best_weights=True)
 
@@ -294,6 +331,8 @@ def main(commandLine=None):
 
 
     trainingStartTime = time.time()
+    
+    
      
     model_history = None    
 
@@ -389,7 +428,7 @@ def main(commandLine=None):
 
     print('')
     
-    rejection90 = scoring.rejection90(val_labels, val_predictions_baseline.flatten(), sample_weight=val_weights)
+    rejection90 = scoring.rejection90(val_labels, val_predictions_baseline.flatten(), sample_weight=None)
     print('----------scoring-----rejection@90=  ', rejection90)
     print('')
 
@@ -417,10 +456,18 @@ def main(commandLine=None):
     
     tqdm.write("Reading input took: %s secs (Wall clock time)" % timedelta(seconds=round(readTime))) 
     tqdm.write("Data preprocessing took: %s secs (Wall clock time)" % timedelta(seconds=round(preprocessingTime)))
+       
+    tqdm.write("HP tuning took: %s secs (Wall clock time)" % timedelta(seconds=round(hpTuningTime)))
     tqdm.write("Training took: %s secs (Wall clock time)" % timedelta(seconds=round(trainingTime)))
     tqdm.write("Prediction & evualation took: %s secs (Wall clock time)" % timedelta(seconds=round(predict_eval_Time)))
     
     tqdm.write("Total execution took: %s secs (Wall clock time)" % timedelta(seconds=round(execTime)))
+
+
+# class ClearTrainingOutput(tf.keras.callbacks.Callback):
+#   def on_train_end(*args, **kwargs):
+#     IPython.display.clear_output(wait = True)
+
 
 #_____________________________________________________________________________
 def make_model(strategy , output_bias=None):
@@ -437,31 +484,129 @@ def make_model(strategy , output_bias=None):
         model = keras.Sequential([
     #       keras.layers.Dense(1280, activation='relu', input_shape=(train_features.shape[-1],), name="layer1" ),
     #       feature_layer,
-          keras.layers.Dense(1280, activation='relu', name="layer1"),
-          keras.layers.Dense(640, activation='relu', name="layer2"),
-          keras.layers.Dropout(.1, name="dropout1"),
-          keras.layers.Dense(320, activation='relu', name="layer3"),
-          keras.layers.Dropout(.05, name="dropout2"),
-          keras.layers.Dense(160, activation='relu', name="layer4"),
-          keras.layers.Dropout(.025, name="dropout3"),
-          keras.layers.Dense(80, activation='relu', name="layer5"),
-          keras.layers.Dropout(.0125, name="dropout4"),
-          keras.layers.Dense(40, activation='relu', name="layer6"),
-          keras.layers.Dense(20, activation='relu', name="layer7"),
-          keras.layers.Dense(1, name="layer8"),
-          keras.layers.Dense(1, activation='sigmoid',
-                             bias_initializer=output_bias),
+#         keras.layers.Dense(1280, activation='relu',  name="layer1"),
+#         keras.layers.Dropout(.5, name="dropout1"),
+#         keras.layers.Dense(640, activation='relu',  name="layer2"),
+#         keras.layers.Dropout(.5, name="dropout2"),
+#         keras.layers.Dense(320, activation='relu',  name="layer3"),
+#         keras.layers.Dropout(.5, name="dropout3"),
+#         keras.layers.Dense(160, activation='relu',  name="layer4"),
+#         keras.layers.Dropout(.5, name="dropout4"),
+#         keras.layers.Dense(80, activation='relu',  name="layer5"),
+#         keras.layers.Dropout(.5, name="dropout5"),
+#         keras.layers.Dense(40, activation='relu',  name="layer6"),
+#         keras.layers.Dropout(.5, name="dropout6"),
+#         keras.layers.Dense(20, activation='relu',  name="layer7"),
+#         keras.layers.Dropout(.5, name="dropout1"),
+#         keras.layers.Dense(1,  name="layer8"),
+#         keras.layers.Dense(1, activation='sigmoid',
+#                            bias_initializer=output_bias),
+
+              keras.layers.Dense(units = 500, activation='relu', kernel_regularizer=keras.regularizers.l2(0.005),  name="layer1"),
+              keras.layers.Dropout(.2, name="dropout1"),
+              keras.layers.Dense(units = 100, activation='relu', kernel_regularizer=keras.regularizers.l2(0.005),  name="layer2"),
+              keras.layers.Dropout(.2, name="dropout2"),
+              keras.layers.Dense(units = 20, activation='relu', kernel_regularizer=keras.regularizers.l2(0.005),  name="layer3"),
+              keras.layers.Dropout(.125, name="dropout3"),
+              keras.layers.Dense(units = 5, activation='relu', kernel_regularizer=keras.regularizers.l2(0.005),  name="layer4"),
+              keras.layers.Dropout(.1, name="dropout4"),
+        #       keras.layers.Dense(1, activation='relu',  name="layer8"),
+              keras.layers.Dense(1, activation='sigmoid')
           ])
       
-      #   model.compile(optimizer='rmsprop',
-    #               loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-    #               metrics=metrics)
+    model.compile(
+       tf.keras.optimizers.RMSprop(learning_rate=0.0005),
+       loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+       metrics=METRICS)
+    
+#     model.compile(
+# #         optimizer=keras.optimizers.Adam(lr=1e-3),
+#         optimizer='Adadelta',
+#         loss=keras.losses.BinaryCrossentropy(),
+#         metrics=METRICS )
+
+#     model.compile(optimizer='adam',
+#                     loss=tf.losses.SparseCategoricalCrossentropy(from_logits=True),
+#                     metrics=METRICS 
+#     )
+
+    return model
+
+
+#_____________________________________________________________________________
+def make_model_hp_tunning(hp, output_bias=None):
+    
+    
+#         tf.keras.backend.set_floatx('float64')
+    METRICS = [
+      keras.metrics.BinaryAccuracy(name='accuracy'),
+      keras.metrics.Precision(name='precision'),
+      keras.metrics.Recall(name='recall'),
+      keras.metrics.AUC(name='auc'),
+      ]
+    
+    hp_units1 = hp.Int('units1', min_value = 100, max_value = 500, step = 32)
+    hp_units2 = hp.Int('units2', min_value = 20, max_value = 100, step = 32)
+    hp_units3 = hp.Int('units3', min_value = 10, max_value = 50, step = 32)
+    hp_units4 = hp.Int('units4', min_value = 1, max_value = 20, step = 32)   
+
+    model = keras.Sequential([
+   
+
+     keras.layers.Dense(units = hp_units1, activation='relu',  name="layer1"),
+     keras.layers.Dropout(.5, name="dropout1"),
+     keras.layers.Dense(units = hp_units2, activation='relu',  name="layer2"),
+     keras.layers.Dropout(.5, name="dropout2"),
+     keras.layers.Dense(units = hp_units3, activation='relu',  name="layer3"),
+     keras.layers.Dropout(.5, name="dropout3"),
+     keras.layers.Dense(units = hp_units4, activation='relu',  name="layer4"),
+     keras.layers.Dropout(.5, name="dropout4"),
+    #       keras.layers.Dense(1, activation='relu',  name="layer8"),
+     keras.layers.Dense(1, activation='sigmoid',
+                        bias_initializer=output_bias),
+     ])
+    
+#       hp_units1 = hp.Int('units1', min_value = 500, max_value = 1000, step = 32)
+#     hp_units2 = hp.Int('units2', min_value = 200, max_value = 500, step = 32)
+#     hp_units3 = hp.Int('units3', min_value = 100, max_value = 400, step = 32)
+#     hp_units4 = hp.Int('units4', min_value = 50, max_value = 160, step = 32)   
+#     hp_units5 = hp.Int('units5', min_value = 30, max_value = 80, step = 32) 
+#     hp_units6 = hp.Int('units6', min_value = 10, max_value = 40, step = 32) 
+#     hp_units7 = hp.Int('units7', min_value = 5, max_value = 20, step = 32) 
+
+
+#     model = keras.Sequential([
+# #       keras.layers.Dense(1280, activation='relu', input_shape=(train_features.shape[-1],), name="layer1" ),
+# #       feature_layer,
+# #       keras.layers.Dense(units = hp_units1, activation='relu', kernel_regularizer=keras.regularizers.l2(0.001), name="layer1"),
+#       keras.layers.Dense(units = hp_units1, activation='relu',  name="layer1"),
+#       keras.layers.Dense(units = hp_units2, activation='relu',  name="layer2"),
+#       keras.layers.Dropout(.5, name="dropout1"),
+#       keras.layers.Dense(units = hp_units3, activation='relu',  name="layer3"),
+#       keras.layers.Dropout(.5, name="dropout2"),
+#       keras.layers.Dense(units = hp_units4, activation='relu',  name="layer4"),
+#       keras.layers.Dropout(.5, name="dropout3"),
+#       keras.layers.Dense(units = hp_units5, activation='relu',  name="layer5"),
+#       keras.layers.Dropout(.5, name="dropout4"),
+# #       keras.layers.Dense(1, activation='relu',  name="layer8"),
+#       keras.layers.Dense(1, activation='sigmoid',
+#                          bias_initializer=output_bias),
+#       ])
+
+
+     # Tune the learning rate for the optimizer 
+     # Choose an optimal value from 0.01, 0.001, or 0.0001
+    hp_learning_rate = hp.Choice('learning_rate', values = [0.0005, 0.001, 0.0015, 0.002] ) #[1e-2, 1e-3, 1e-4]
     
     model.compile(
-#       optimizer=keras.optimizers.Adam(lr=1e-3),
-      tf.keras.optimizers.RMSprop(learning_rate=0.0005),
-      loss=keras.losses.BinaryCrossentropy(),
-      metrics=METRICS )
+       tf.keras.optimizers.RMSprop(learning_rate=hp_learning_rate),
+       loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+       metrics=METRICS)
+    
+#     model.compile(
+#         optimizer=keras.optimizers.Adam(lr=1e-3),
+#         loss=keras.losses.BinaryCrossentropy(),
+#         metrics=METRICS )
 
 #   model.compile(optimizer='adam',
 #                 loss=tf.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -469,7 +614,6 @@ def make_model(strategy , output_bias=None):
 # )
 
     return model
-
 #_____________________________________________________________________________ 
 def plot_metrics(history, outputPath):
     metrics =  ['loss', 'auc', 'precision', 'recall']
